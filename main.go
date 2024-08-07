@@ -1,144 +1,186 @@
 package main
 
 import (
-	"fmt"
+	"encoding/json"
+	"fiber_prac/dtos"
+	repo "fiber_prac/repository"
+	"github.com/gofiber/fiber/v2"
 	"github.com/pluja/pocketbase"
 	"log"
 )
 
-type Post struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Content string `json:"content"`
-	User    string `json:"user"`
-	Created string `json:"created"`
-	Updated string `json:"updated"`
-}
-
-type User struct {
-	ID       string `json:"id"`
-	Username string `json:"username"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Avatar   string `json:"avatar"`
-	Created  string `json:"created"`
-	Updated  string `json:"updated"`
-	Role     string `json:"role"`
-}
-
-var subinId = "kitk1setevfrv"
-var jiseopId = "9t2x1sk39d49m27"
-
 func main() {
-	client, postCollection, userCollection := pocketbaseNewClient()
 
-	// [RECORD CRUD]
-	// List with pagination
-	err := postsViewWithOptions(postCollection)
+	app := fiber.New()
+	defer app.Listen(":3000")
 
-	// [AUTH]
-	//err = postCollection.RequestVerification("auth@naver.com")
-	//if err != nil {
-	//	log.Println("postCollection.RequestVerification()")
-	//	log.Fatal(err)
-	//}
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendString("Hello, World!")
+	})
 
-	// authwithpassword 후에 posts 다루기
-	// posts view rule : @request.auth.email = user.email 적용
-	// rules : id = @request.auth.id
-	password := authWithPasswordRoleGold(err, userCollection)
+	app.Post("/login/email", func(c *fiber.Ctx) error {
+		var loginRequest dtos.LoginRequest
+		err := c.BodyParser(&loginRequest)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+				"data":  loginRequest,
+			})
+		}
 
-	// [Auth]
-	// users crud rules : id = @request.auth.id
-	createPost(err, postCollection)
+		response, err := repo.UserAuthInMyAppWithEmail(loginRequest.Username, loginRequest.Password)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+				"data":  loginRequest,
+			})
+		}
 
-	//&& @request.data.user.role = "gold" _> error
-	err = authWithPasswordRoleSilver(password, err, userCollection)
+		repo.UserToken = response.Token
+		c.Set("Authorization", response.Token)
 
-	// auth 로그인 하면서 newClient
-	userCollection = pocketbaseNewClientWithAdminEmailPassword(client, postCollection, userCollection)
+		log.Println(response.Token)
+		log.Println(response.Record.Email)
+		log.Println(response.Record.ID)
+		log.Println(response.Record.Username)
 
-	// [Auth]
-	// users crud rules : id = @request.auth.id
+		return c.SendStatus(fiber.StatusAccepted)
+	})
+
+	app.Post("/signup/oauth", func(c *fiber.Ctx) error {
+
+		repo.UserAuthInSMyAppOauth()
+
+		//oauth, err := repo.UserAuthInMyAppWithOauth()
+		//if err != nil {
+		//	return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+		//		"error": err.Error(),
+		//	})
+		//}
+		//log.Println(oauth.Token)
+		//log.Println(oauth)
+
+		return c.SendStatus(fiber.StatusAccepted)
+	})
+
+	app.Post("/login/oauth", func(c *fiber.Ctx) error {
+		var loginRequest dtos.LoginRequest
+		err := c.BodyParser(&loginRequest)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+				"data":  loginRequest,
+			})
+		}
+
+		response, err := repo.UserAuthInMyAppWithEmail(loginRequest.Username, loginRequest.Password)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+				"data":  loginRequest,
+			})
+		}
+
+		repo.UserToken = response.Token
+		c.Set("Authorization", response.Token)
+
+		log.Println(response.Token)
+		log.Println(response.Record.Email)
+		log.Println(response.Record.ID)
+		log.Println(response.Record.Username)
+
+		return c.SendStatus(fiber.StatusAccepted)
+	})
+
+	// post
+	app.Get("/posts", func(c *fiber.Ctx) error {
+
+		if c.Get("Authorization") != repo.UserToken {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Authorization token error",
+				"Auth":  c.Get("Authorization"),
+				"User":  repo.UserToken,
+			})
+		}
+		newParamsList := pocketbase.ParamsList{
+			Page:   1,
+			Size:   10,
+			Sort:   "created",
+			Fields: "id, title, content, user",
+		}
+
+		//  "/api/collections/posts/records?page=1& ..."
+		// net/http 사용
+		body, err := repo.PostsListSearchWithOptionsWithToken(c.Get("Authorization"), newParamsList)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+
+		var result map[string]interface{}
+		err = json.Unmarshal(body, &result)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+		//log.Println(json.Marshal(postsList.Items))
+		return c.Status(fiber.StatusOK).JSON(result)
+
+	})
+
+	// replies
+	app.Get("/replies", func(c *fiber.Ctx) error {
+		if c.Get("Authorization") != repo.UserToken {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+				"error": "Authorization token error",
+				"Auth":  c.Get("Authorization"),
+				"User":  repo.UserToken,
+			})
+		}
+
+		newParamsList := pocketbase.ParamsList{
+			Page: 1,
+			Size: 10,
+		}
+
+		//  "/api/collections/posts/records?page=1& ..."
+		// net/http 사용
+		body, err := repo.ReliesListSearchWithOptionsWithToken(c.Get("Authorization"), newParamsList)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+
+		var result map[string]interface{}
+		err = json.Unmarshal(body, &result)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"error": err.Error(),
+			})
+		}
+		//log.Println(json.Marshal(postsList.Items))
+		return c.Status(fiber.StatusOK).JSON(result)
+	})
+
+	app.Post("/logout", func(c *fiber.Ctx) error {
+
+		repo.UserToken = ""
+
+		return c.SendStatus(fiber.StatusOK)
+	})
 
 }
 
-func pocketbaseNewClientWithAdminEmailPassword(client *pocketbase.Client, postCollection *pocketbase.Collection[Post], userCollection *pocketbase.Collection[User]) *pocketbase.Collection[User] {
-	fmt.Println("new client with auth")
-	client = pocketbase.NewClient(
-		"http://localhost:8090",
-		pocketbase.WithAdminEmailPassword("admin@naver.com", "123412341234"),
-	)
-	postCollection = pocketbase.CollectionSet[Post](client, "posts")
-	userCollection = pocketbase.CollectionSet[User](client, "users")
-	return userCollection
-}
-
-func authWithPasswordRoleSilver(password pocketbase.AuthWithPasswordResponse, err error, userCollection *pocketbase.Collection[User]) error {
-	password, err = userCollection.AuthWithPassword(
-		"user2@naver.com", //subin email
-		"123412341234",
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return err
-}
-
-func createPost(err error, postCollection *pocketbase.Collection[Post]) {
-	posts, err := postCollection.Create(
-		Post{
-			Title:   "new_title",
-			Content: "new content",
-			User:    jiseopId,
-		},
-	)
-	if err != nil {
-		log.Println("postCollection.Create  ERROR")
-		log.Fatal(err)
-	}
-	log.Println("postCollection.Create ok")
-	log.Println(posts.ID)
-}
-
-func authWithPasswordRoleGold(err error, userCollection *pocketbase.Collection[User]) pocketbase.AuthWithPasswordResponse {
-	password, err := userCollection.AuthWithPassword(
-		"user1@naver.com", //jiseop email
-		"123412341234",
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("userCollection.AuthWithPassword auth ok")
-	fmt.Println("password:", password.Record.ID)
-	return password
-}
-
-func postsViewWithOptions(postCollection *pocketbase.Collection[Post]) error {
-	response, err := postCollection.List(pocketbase.ParamsList{
-		Page: 1, Size: 10,
+func RepliesListSearchWithOptions(c *fiber.Ctx) (pocketbase.ResponseList[repo.Replies], error) {
+	repliesList, err := repo.RepliesCollection.List(pocketbase.ParamsList{
+		Page: 1,
+		Size: 10,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return repliesList, err
 	}
-	fmt.Println(response.Items)
-
-	// FullList also available for collections:
-	response, err = postCollection.FullList(pocketbase.ParamsList{
-		Sort: "-created",
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(response.Items)
-
-	log.Printf("%+v", response.Items)
-	return err
-}
-
-func pocketbaseNewClient() (*pocketbase.Client, *pocketbase.Collection[Post], *pocketbase.Collection[User]) {
-	client := pocketbase.NewClient("http://localhost:8090")
-	postCollection := pocketbase.CollectionSet[Post](client, "posts")
-	userCollection := pocketbase.CollectionSet[User](client, "users")
-	return client, postCollection, userCollection
+	return repliesList, nil
 }
